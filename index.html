@@ -38,6 +38,7 @@ body {
   background-color: var(--desk);
   color: var(--muted);
   font-family: var(--f-pixel);
+  touch-action: manipulation;
 }
 .stage {
   min-height: 100%;
@@ -67,6 +68,7 @@ body {
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }
 .topline {
   display: flex;
@@ -150,10 +152,25 @@ body {
   margin-top: 4.5cqw;
 }
 .dpad-wrap {
+  position: relative;
   padding: 2.4cqw;
   border-radius: 50%;
   background: var(--recess);
+  touch-action: none;
+  cursor: pointer;
 }
+/* invisible padding that widens each control's touch target beyond what you see */
+.dpad-wrap::before, .ab-zone::before, .pill-col::before {
+  content: "";
+  position: absolute;
+}
+.dpad-wrap::before { inset: -6cqw -3cqw -6cqw -6cqw; border-radius: 50%; }
+/* where zones overlap, the game buttons win over START/SELECT so a low thumb never pauses */
+.dpad-wrap, .ab-zone { z-index: 2; }
+.ab-zone { position: relative; touch-action: none; cursor: pointer; }
+.ab-zone::before { inset: -7cqw -5cqw -7cqw -3cqw; }
+.pill-col { position: relative; touch-action: none; cursor: pointer; }
+.pill-col::before { inset: -4.5cqw -3cqw -3cqw; }
 .dpad {
   width: 25cqw;
   aspect-ratio: 1;
@@ -281,8 +298,20 @@ body {
 }
 .keys .touch { display: none; }
 @media (hover: none) and (pointer: coarse) {
-  .keys .desk { display: none; }
-  .keys .touch { display: inline; }
+  /* phones: bigger controls, and drop the help text to make room for them */
+  .device {
+    width: min(520px, 100%, max(260px, calc((100vh - 40px) * 0.6)));
+    width: min(520px, 100%, max(260px, calc((100svh - 40px) * 0.6)));
+  }
+  .keys { display: none; }
+  .controls { margin-top: 4cqw; }
+  .dpad { width: 34cqw; }
+  .ab { gap: 5cqw; }
+  .btn { width: 17cqw; }
+  .btn-col label { font-size: 3.2cqw; }
+  .startsel { margin-top: 6cqw; gap: 7cqw; }
+  .pill { width: 16cqw; height: 4.6cqw; border-radius: 3cqw; }
+  .pill-col label { font-size: 2.4cqw; }
 }
 @media (prefers-reduced-motion: reduce) {
   .led.low { animation: none; }
@@ -300,19 +329,21 @@ body {
       </div>
       <div class="brand"><span class="brand-name">Undead United</span><span class="brand-sub">POCKET</span></div>
       <div class="controls">
-        <div class="dpad-wrap">
+        <div class="dpad-wrap" id="dpadZone">
           <div class="dpad" id="dpad" role="group" aria-label="Direction pad">
             <span class="up"></span><span class="left"></span><span class="mid"></span><span class="right"></span><span class="down"></span>
           </div>
         </div>
-        <div class="ab">
-          <div class="btn-col"><button type="button" class="btn" id="btnB" aria-label="B: pass, or switch player"></button><label for="btnB">B</label></div>
-          <div class="btn-col"><button type="button" class="btn" id="btnA" aria-label="A: kick, hold to power up"></button><label for="btnA">A</label></div>
+        <div class="ab-zone" id="abZone">
+          <div class="ab">
+            <div class="btn-col"><button type="button" class="btn" id="btnB" aria-label="B: pass, or switch player"></button><label>B</label></div>
+            <div class="btn-col"><button type="button" class="btn" id="btnA" aria-label="A: kick, hold to power up"></button><label>A</label></div>
+          </div>
         </div>
       </div>
       <div class="startsel">
-        <div class="pill-col"><button type="button" class="pill" id="btnSelect" aria-label="Select: sound on or off"></button><label for="btnSelect">SELECT</label></div>
-        <div class="pill-col"><button type="button" class="pill" id="btnStart" aria-label="Start or pause"></button><label for="btnStart">START</label></div>
+        <div class="pill-col" id="colSelect"><button type="button" class="pill" id="btnSelect" aria-label="Select: sound on or off"></button><label>SELECT</label></div>
+        <div class="pill-col" id="colStart"><button type="button" class="pill" id="btnStart" aria-label="Start or pause"></button><label>START</label></div>
       </div>
       <div class="speaker" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span></div>
     </div>
@@ -594,44 +625,80 @@ cv.addEventListener('pointerdown', () => {
 });
 addEventListener('blur', () => { for (const k in keys) keys[k] = 0; });
 
+// The whole round recess around the D-pad (plus an invisible margin) takes touches;
+// direction comes from where the thumb sits relative to the centre of the cross.
 const dpad = document.getElementById('dpad');
+const dpadZone = document.getElementById('dpadZone');
 let dpId = null;
 function dpSet(e) {
   const r = dpad.getBoundingClientRect();
   const dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
-  const dz = r.width * 0.1, ax = Math.abs(dx), ay = Math.abs(dy);
+  const dz = r.width * 0.08, ax = Math.abs(dx), ay = Math.abs(dy);
   touch.left = dx < -dz && ax > ay * 0.45 ? 1 : 0;
   touch.right = dx > dz && ax > ay * 0.45 ? 1 : 0;
   touch.up = dy < -dz && ay > ax * 0.45 ? 1 : 0;
   touch.down = dy > dz && ay > ax * 0.45 ? 1 : 0;
 }
 function dpClear() { touch.up = touch.down = touch.left = touch.right = 0; dpId = null; }
-dpad.addEventListener('pointerdown', e => {
+dpadZone.addEventListener('pointerdown', e => {
   e.preventDefault();
   dpId = e.pointerId;
-  try { dpad.setPointerCapture(e.pointerId); } catch (err) { /* optional */ }
+  try { dpadZone.setPointerCapture(e.pointerId); } catch (err) { /* optional */ }
   dpSet(e);
   initAudio();
 });
-dpad.addEventListener('pointermove', e => { if (e.pointerId === dpId) dpSet(e); });
+dpadZone.addEventListener('pointermove', e => { if (e.pointerId === dpId) dpSet(e); });
 ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(t =>
-  dpad.addEventListener(t, e => { if (e.pointerId === dpId) dpClear(); }));
-dpad.addEventListener('contextmenu', e => e.preventDefault());
+  dpadZone.addEventListener(t, e => { if (e.pointerId === dpId) dpClear(); }));
+dpadZone.addEventListener('contextmenu', e => e.preventDefault());
 
-const btns = { a: 'btnA', b: 'btnB', start: 'btnStart', select: 'btnSelect' };
-const btnEls = {};
-for (const k in btns) {
-  const el = document.getElementById(btns[k]);
-  btnEls[k] = el;
-  const on = e => {
+const btnEls = {
+  a: document.getElementById('btnA'), b: document.getElementById('btnB'),
+  start: document.getElementById('btnStart'), select: document.getElementById('btnSelect')
+};
+
+// A and B share one big touch zone: each touch goes to whichever button is nearer,
+// and keeps that button until the finger lifts (so a drifting thumb can't fire B mid-charge).
+const abZone = document.getElementById('abZone');
+const abPtrs = new Map();
+function abNearest(e) {
+  let best = 'a', bd = Infinity;
+  for (const k of ['a', 'b']) {
+    const r = btnEls[k].getBoundingClientRect();
+    const d = Math.hypot(e.clientX - (r.left + r.width / 2), e.clientY - (r.top + r.height / 2));
+    if (d < bd) { bd = d; best = k; }
+  }
+  return best;
+}
+function abSync() {
+  const ks = [...abPtrs.values()];
+  touch.a = ks.includes('a') ? 1 : 0;
+  touch.b = ks.includes('b') ? 1 : 0;
+}
+abZone.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  const k = abNearest(e);
+  abPtrs.set(e.pointerId, k);
+  tapped[k] = 1;
+  abSync();
+  initAudio();
+  try { abZone.setPointerCapture(e.pointerId); } catch (err) { /* optional */ }
+});
+['pointerup', 'pointercancel', 'lostpointercapture'].forEach(t =>
+  abZone.addEventListener(t, e => { if (abPtrs.delete(e.pointerId)) abSync(); }));
+abZone.addEventListener('contextmenu', e => e.preventDefault());
+
+// START and SELECT: the pill, its label and a margin around them all count
+for (const [k, id] of [['start', 'colStart'], ['select', 'colSelect']]) {
+  const el = document.getElementById(id);
+  const off = () => { touch[k] = 0; };
+  el.addEventListener('pointerdown', e => {
     e.preventDefault();
     touch[k] = 1;
     tapped[k] = 1;
     initAudio();
     try { el.setPointerCapture(e.pointerId); } catch (err) { /* optional */ }
-  };
-  const off = () => { touch[k] = 0; };
-  el.addEventListener('pointerdown', on);
+  });
   el.addEventListener('pointerup', off);
   el.addEventListener('pointercancel', off);
   el.addEventListener('lostpointercapture', off);
