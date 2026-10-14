@@ -17,8 +17,8 @@ Play it: open `index.html` in a browser (no build step, no dependencies).
 | --- | --- | --- |
 | Run | Arrows / WASD | D-pad |
 | Kick (hold to power up) | Z, J or Space | A |
-| Pass (or call for the ball) | X or K | B |
-| Start / pause | Enter | START |
+| Pass (control follows the ball), or switch to the teammate nearest the ball | X or K | B |
+| Start / pause | Enter, or click the screen | START |
 | Sound on/off | Shift | SELECT |
 
 ## Tuning

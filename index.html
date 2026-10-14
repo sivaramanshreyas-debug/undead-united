@@ -306,7 +306,7 @@ body {
           </div>
         </div>
         <div class="ab">
-          <div class="btn-col"><button type="button" class="btn" id="btnB" aria-label="B: pass"></button><label for="btnB">B</label></div>
+          <div class="btn-col"><button type="button" class="btn" id="btnB" aria-label="B: pass, or switch player"></button><label for="btnB">B</label></div>
           <div class="btn-col"><button type="button" class="btn" id="btnA" aria-label="A: kick, hold to power up"></button><label for="btnA">A</label></div>
         </div>
       </div>
@@ -320,9 +320,9 @@ body {
   <p class="keys">
     <span class="desk"><kbd>ARROWS</kbd> / <kbd>WASD</kbd> run</span>
     <span class="desk"><kbd>Z</kbd> kick, hold for power</span>
-    <span class="desk"><kbd>X</kbd> pass</span>
+    <span class="desk"><kbd>X</kbd> pass, or switch player</span>
     <span class="desk"><kbd>ENTER</kbd> start · <kbd>SHIFT</kbd> sound</span>
-    <span class="touch">D-pad to run · A to kick, hold for power · B to pass</span>
+    <span class="touch">D-pad to run · A to kick, hold for power · B to pass or switch player</span>
   </p>
 </main>
 
@@ -554,28 +554,43 @@ const SFX = {
 const keys = { up: 0, down: 0, left: 0, right: 0, a: 0, b: 0, start: 0, select: 0 };
 const touch = { ...keys };
 const prev = { ...keys };
+// presses are latched until the next update, so a tap shorter than one frame still counts
+const tapped = { ...keys };
 const held = k => keys[k] || touch[k];
-const pressed = k => held(k) && !prev[k];
-function snapshotInput() { for (const k in keys) prev[k] = held(k); }
+const pressed = k => (held(k) && !prev[k]) || tapped[k];
+function snapshotInput() { for (const k in keys) { prev[k] = held(k); tapped[k] = 0; } }
 
 const KEYMAP = {
   ArrowUp: 'up', KeyW: 'up', ArrowDown: 'down', KeyS: 'down',
   ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right',
   KeyZ: 'a', KeyJ: 'a', Space: 'a', KeyX: 'b', KeyK: 'b',
-  Enter: 'start', ShiftLeft: 'select', ShiftRight: 'select'
+  Enter: 'start', NumpadEnter: 'start', ShiftLeft: 'select', ShiftRight: 'select'
 };
+// fallback by key name, for keyboards and browsers that leave e.code empty
+const KEYMAP_KEY = {
+  ArrowUp: 'up', w: 'up', W: 'up', ArrowDown: 'down', s: 'down', S: 'down',
+  ArrowLeft: 'left', a: 'left', A: 'left', ArrowRight: 'right', d: 'right', D: 'right',
+  z: 'a', Z: 'a', j: 'a', J: 'a', ' ': 'a', x: 'b', X: 'b', k: 'b', K: 'b',
+  Enter: 'start', Shift: 'select'
+};
+const mapKey = e => KEYMAP[e.code] || KEYMAP_KEY[e.key];
 addEventListener('keydown', e => {
-  const k = KEYMAP[e.code];
+  const k = mapKey(e);
   if (!k) return;
   e.preventDefault();
-  keys[k] = 1;
+  if (!e.repeat) { keys[k] = 1; tapped[k] = 1; }
   initAudio();
 });
 addEventListener('keyup', e => {
-  const k = KEYMAP[e.code];
+  const k = mapKey(e);
   if (!k) return;
   e.preventDefault();
   keys[k] = 0;
+});
+// clicking or tapping the screen also works as START on the title and full-time screens
+cv.addEventListener('pointerdown', () => {
+  initAudio();
+  if (state === 'title' || state === 'over') tapped.start = 1;
 });
 addEventListener('blur', () => { for (const k in keys) keys[k] = 0; });
 
@@ -611,6 +626,7 @@ for (const k in btns) {
   const on = e => {
     e.preventDefault();
     touch[k] = 1;
+    tapped[k] = 1;
     initAudio();
     try { el.setPointerCapture(e.pointerId); } catch (err) { /* optional */ }
   };
@@ -660,7 +676,7 @@ const mkMate = hx => ({ x: hx, y: 96, homeX: hx, alive: true, anim: 0, holdT: 0,
 
 function startGame() {
   score = 0; wave = 1; newHi = false; PAL = BASE;
-  P = { x: 80, y: 112, fx: 0, fy: -1, anim: 0, hp: 3, inv: 0, charge: 0, charging: false, kickCd: 0, moving: false, flip: false };
+  P = { x: 80, y: 112, fx: 0, fy: -1, anim: 0, hp: 3, inv: 0, charge: 0, charging: false, kickCd: 0, moving: false, flip: false, markT: 0 };
   mates = [mkMate(36), mkMate(124)];
   zombies = []; parts = []; pops = [];
   coins = 0; fieldCoins = []; coinPending = false; dragon = null; dragonMsgT = 0;
@@ -712,6 +728,7 @@ function kickBall(dx, dy, pow, who) {
   ball.vx = dx * pow;
   ball.vy = dy * pow;
   ball.combo = 0;
+  ball.passTarget = null;
   who.kickCd = 14;
   SFX.kick();
 }
@@ -734,14 +751,33 @@ function passFromPlayer() {
   }
   if (!best) return;
   passTo(P, best.x, best.y);
+  ball.passTarget = best;
   best.recv = 60;
 }
-function matePass(m) { passTo(m, P.x, P.y); }
-function mateShoot(m) {
-  const ax = (keeper.x < 80 ? 93 : 67) + rnd(-3, 3), ay = 11;
-  const d = dist(ball.x, ball.y, ax, ay) || 1;
-  kickBall((ax - ball.x) / d, (ay - ball.y) / d, 3.9, m);
-  m.kickCd = 20;
+
+/* You always control whoever has the ball: swap bodies with a teammate, FIFA-style. */
+function swapControl(m) {
+  const px = P.x, py = P.y, pflip = P.flip, panim = P.anim;
+  P.x = m.x; P.y = m.y; P.flip = m.flip; P.anim = m.anim;
+  m.x = px; m.y = py; m.flip = pflip; m.anim = panim;
+  m.recv = 0; m.kickCd = 12; m.inv = Math.max(m.inv, 30);
+  const s = Math.hypot(ball.vx, ball.vy);
+  if (s > 0.3) { P.fx = ball.vx / s; P.fy = ball.vy / s; }
+  P.kickCd = 0; P.charging = false; P.charge = 0; P.markT = 45;
+  // give the teammates the wing lanes nearest to where they now stand
+  const alive = mates.filter(q => q.alive).sort((a, b) => a.x - b.x);
+  if (alive.length === 2) { alive[0].homeX = 36; alive[1].homeX = 124; }
+  else if (alive.length === 1) alive[0].homeX = alive[0].x < 80 ? 36 : 124;
+  SFX.blip();
+}
+function switchToNearestMate() {
+  let best = null, bd = dist(P.x, P.y, ball.x, ball.y);
+  for (const m of mates) {
+    if (!m.alive) continue;
+    const d = dist(m.x, m.y, ball.x, ball.y);
+    if (d < bd) { bd = d; best = m; }
+  }
+  if (best) swapControl(best);
 }
 
 function spawnZombie(at) {
@@ -788,7 +824,7 @@ function hurtPlayer(z) {
 }
 function infect(m) {
   m.alive = false;
-  if (ball.owner === m) { ball.owner = null; ball.vx = rnd(-0.6, 0.6); ball.vy = 1; }
+  if (ball.passTarget === m) ball.passTarget = null;
   const z = spawnZombie({ x: m.x, y: m.y });
   z.spd = Math.min(0.85, z.spd + 0.05);
   poof(m.x, m.y);
@@ -846,15 +882,16 @@ function updatePlayer() {
   }
   if (P.inv > 0) P.inv--;
   if (P.kickCd > 0) P.kickCd--;
+  if (P.markT > 0) P.markT--;
 
   if (ball.owner === P) {
     if (held('a')) { P.charging = true; P.charge = Math.min(P.charge + 1, 40); }
-    else if (P.charging) { kickBall(P.fx, P.fy, 2.3 + (P.charge / 40) * 2.3, P); P.charging = false; P.charge = 0; }
+    else if (P.charging || pressed('a')) { kickBall(P.fx, P.fy, 2.3 + (P.charge / 40) * 2.3, P); P.charging = false; P.charge = 0; }
     if (ball.owner === P && pressed('b')) { passFromPlayer(); P.charging = false; P.charge = 0; }
   } else {
     P.charging = false;
     P.charge = 0;
-    if (pressed('b')) { const m = mates.find(m => ball.owner === m); if (m) matePass(m); }
+    if (pressed('b')) switchToNearestMate();
   }
 }
 
@@ -872,13 +909,7 @@ function updateMates() {
       if (d < nd) { nd = d; nz = z; }
     }
     let tx, ty, sp = 0.7;
-    if (ball.owner === m) {
-      m.holdT++;
-      tx = 80 + (m.homeX - 80) * 0.35; ty = 30; sp = 0.8;
-      if (m.holdT > 12 && (m.y < 50 || (nd < 18 && m.y < 75))) mateShoot(m);
-      else if (m.holdT > 12 && nd < 18) matePass(m);
-      else if (m.holdT > 200) { if (m.y < 80) mateShoot(m); else matePass(m); }
-    } else if (m.recv > 0 && !ball.owner) {
+    if (m.recv > 0 && !ball.owner) {
       tx = ball.x; ty = ball.y; sp = 0.9;
     } else {
       tx = m.homeX; ty = clamp(P.y - 14, 44, 118);
@@ -979,9 +1010,13 @@ function updateBall() {
   // pick-ups
   const s2 = Math.hypot(ball.vx, ball.vy);
   if (P.kickCd === 0 && s2 < 2.2 && dist(ball.x, ball.y, P.x, P.y) < 7) { ball.owner = P; SFX.blip(); return; }
+  // a teammate collects a pass aimed at them, or a slow loose ball, and you take over that teammate
   for (const m of mates) {
-    if (m.alive && m.kickCd === 0 && s2 < 2.8 && dist(ball.x, ball.y, m.x, m.y) < 7) {
-      ball.owner = m; m.holdT = 0; m.recv = 0;
+    if (!m.alive || m.kickCd > 0 || dist(ball.x, ball.y, m.x, m.y) >= 7) continue;
+    if ((ball.passTarget === m && s2 < 2.8) || s2 < 1) {
+      swapControl(m);
+      ball.owner = P;
+      ball.passTarget = null;
       return;
     }
   }
@@ -1149,6 +1184,7 @@ function renderTitle() {
   logo('UNITED', 31);
   textC('SOCCER VS THE DEAD', 52, 1);
   textC('A KICK   B PASS', 62, 1);
+  textC('CLICK OR PRESS ENTER', 70, 1);
   rect(0, 76, W, 30, 2);
   rect(0, 76, W, 1, 1);
   rect(0, 105, W, 1, 1);
@@ -1197,6 +1233,12 @@ function renderWorld() {
   ents.sort((a, b) => a[0] - b[0]);
   for (const e of ents) e[1]();
 
+  if (P.markT > 0 && (frame >> 2) & 1) {
+    // arrow over the player you just took control of
+    rect(P.x - 2, P.y - 11, 5, 1, 0);
+    rect(P.x - 1, P.y - 10, 3, 1, 0);
+    rect(P.x, P.y - 9, 1, 1, 0);
+  }
   if (ball.owner === P && state === 'play') {
     rect(P.x + P.fx * 12, P.y + P.fy * 12, 1, 1, 0);
     rect(P.x + P.fx * 16, P.y + P.fy * 16, 1, 1, 0);
@@ -1239,11 +1281,12 @@ function renderOverlays() {
   if (state === 'play' && bannerT > 0) {
     const s = 'WAVE ' + wave;
     if (wave === 1) {
-      panel(10, 40, 140, 50);
-      textC(s, 45, 0, 2);
-      textC('SCORE TO CLEAR THE PITCH', 61, 1);
-      textC('HOLD A = POWER   B = PASS', 70, 1);
-      textC('2 COINS = DRAGON', 79, 1);
+      panel(10, 36, 140, 60);
+      textC(s, 41, 0, 2);
+      textC('SCORE TO CLEAR THE PITCH', 57, 1);
+      textC('HOLD A = POWER   B = PASS', 66, 1);
+      textC('PASSING SWITCHES PLAYER', 75, 1);
+      textC('2 COINS = DRAGON', 84, 1);
     } else {
       panel(16, 48, 128, 30);
       textC(s, 53, 0, 2);
