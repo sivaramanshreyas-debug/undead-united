@@ -895,7 +895,18 @@ function updatePlayer() {
   }
 }
 
+let chaser = null;
 function updateMates() {
+  // after a miss or a stray pass, the teammate nearest the loose ball (and nearer than you) goes to fetch it
+  chaser = null;
+  if (!ball.owner && !(ball.passTarget && ball.passTarget.alive)) {
+    let bd = dist(P.x, P.y, ball.x, ball.y);
+    for (const m of mates) {
+      if (!m.alive) continue;
+      const d = dist(m.x, m.y, ball.x, ball.y);
+      if (d < bd) { bd = d; chaser = m; }
+    }
+  }
   for (const m of mates) {
     if (!m.alive) continue;
     m.anim++;
@@ -909,8 +920,11 @@ function updateMates() {
       if (d < nd) { nd = d; nz = z; }
     }
     let tx, ty, sp = 0.7;
-    if (m.recv > 0 && !ball.owner) {
-      tx = ball.x; ty = ball.y; sp = 0.9;
+    if (nz && nd < 12) {
+      const a = Math.atan2(m.y - nz.y, m.x - nz.x);
+      tx = m.x + Math.cos(a) * 20; ty = m.y + Math.sin(a) * 20; sp = 0.85;
+    } else if ((m.recv > 0 && !ball.owner) || m === chaser) {
+      tx = ball.x; ty = ball.y; sp = 0.95;
     } else {
       tx = m.homeX; ty = clamp(P.y - 14, 44, 118);
       if (nz && nd < 28) {
@@ -1013,7 +1027,7 @@ function updateBall() {
   // a teammate collects a pass aimed at them, or a slow loose ball, and you take over that teammate
   for (const m of mates) {
     if (!m.alive || m.kickCd > 0 || dist(ball.x, ball.y, m.x, m.y) >= 7) continue;
-    if ((ball.passTarget === m && s2 < 2.8) || s2 < 1) {
+    if ((ball.passTarget === m && s2 < 2.8) || (m === chaser && s2 < 2.2) || s2 < 1) {
       swapControl(m);
       ball.owner = P;
       ball.passTarget = null;
